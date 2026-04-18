@@ -10,6 +10,7 @@ interface RouteWithCity {
   type: 'land' | 'water'
   apCost: number
   city: City
+  nation: Nation
 }
 
 interface GameData {
@@ -21,11 +22,21 @@ interface GameData {
   routes: RouteWithCity[]
 }
 
+function priceLabel(price: number, base: number): { label: string; color: string } {
+  const ratio = price / base
+  if (ratio <= 0.7) return { label: '激安', color: 'text-cyan-400' }
+  if (ratio <= 0.9) return { label: '安い', color: 'text-green-400' }
+  if (ratio <= 1.1) return { label: '普通', color: 'text-green-700' }
+  if (ratio <= 1.3) return { label: '高め', color: 'text-yellow-500' }
+  return { label: '高騰', color: 'text-red-400' }
+}
+
 export default function GamePage() {
   const router = useRouter()
   const [data, setData] = useState<GameData | null>(null)
   const [message, setMessage] = useState('')
   const [tradeAmounts, setTradeAmounts] = useState<Record<string, number>>({})
+  const [apTimer, setApTimer] = useState(0)
 
   const load = useCallback(async () => {
     const res = await fetch('/api/city')
@@ -36,6 +47,12 @@ export default function GamePage() {
 
   useEffect(() => { load() }, [load])
 
+  // APカウントダウン表示用タイマー
+  useEffect(() => {
+    const id = setInterval(() => setApTimer(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+
   async function move(targetCityId: string) {
     setMessage('')
     const res = await fetch('/api/move', {
@@ -45,7 +62,7 @@ export default function GamePage() {
     })
     const json = await res.json()
     if (!res.ok) { setMessage(json.error); return }
-    setMessage(`${json.movedTo.name} へ移動した`)
+    setMessage(`▶ ${json.movedTo.name} へ移動した`)
     await load()
   }
 
@@ -59,7 +76,7 @@ export default function GamePage() {
     })
     const json = await res.json()
     if (!res.ok) { setMessage(json.error); return }
-    setMessage(`${action === 'buy' ? '購入' : '売却'} ${amount}個 @ ${json.price}G = ${json.total}G`)
+    setMessage(`${action === 'buy' ? '◆ 購入' : '◇ 売却'} ×${amount} @ ${json.price}G = ${json.total}G`)
     await load()
   }
 
@@ -75,30 +92,31 @@ export default function GamePage() {
     return sum + (g?.weight ?? 0) * (qty ?? 0)
   }, 0)
 
-  const apNextMs = (player.maxAp - player.ap > 0)
-    ? 10 * 60 * 1000 - (Date.now() - player.lastApRestore) % (10 * 60 * 1000)
+  const apIntervalMs = 6 * 1000
+  const apNextSec = player.ap < player.maxAp
+    ? Math.ceil((apIntervalMs - (Date.now() - player.lastApRestore) % apIntervalMs) / 1000)
     : 0
-  const apNextMin = Math.ceil(apNextMs / 60000)
 
   return (
     <main className="min-h-screen bg-black text-green-400 font-mono text-sm p-2">
       {/* ステータスバー */}
-      <div className="border border-green-700 p-2 mb-2 flex flex-wrap gap-4">
+      <div className="border border-green-700 p-2 mb-2 flex flex-wrap gap-4 items-center">
         <span className="text-yellow-400 font-bold">{player.name}</span>
-        <span>所持金: <span className="text-yellow-300">{player.gold}G</span></span>
-        <span>AP: <span className="text-cyan-400">{player.ap}/{player.maxAp}</span>
-          {player.ap < player.maxAp && <span className="text-green-700 ml-1">(+1まで{apNextMin}分)</span>}
+        <span>所持金: <span className="text-yellow-300">{player.gold.toLocaleString()}G</span></span>
+        <span>
+          AP: <span className="text-cyan-400">{player.ap}/{player.maxAp}</span>
+          {player.ap < player.maxAp && (
+            <span className="text-green-700 ml-1 text-xs">(+1まで{apNextSec}秒)</span>
+          )}
         </span>
-        <span>積荷: <span className="text-orange-400">{cargoWeight}/{player.cargoCapacity}</span></span>
+        <span>積荷重量: <span className={cargoWeight >= player.cargoCapacity ? 'text-red-400' : 'text-orange-400'}>{cargoWeight}/{player.cargoCapacity}</span></span>
       </div>
 
       {/* 現在地 */}
       <div className="border border-green-700 p-2 mb-2">
         <span className="text-green-600">現在地: </span>
         <span className="text-white font-bold">{city.name}</span>
-        <span className="ml-2 text-xs" style={{ color: nation.color }}>
-          [{nation.name}]
-        </span>
+        <span className="ml-2 text-xs" style={{ color: nation.color }}>▮ {nation.name}</span>
       </div>
 
       {message && (
@@ -115,10 +133,12 @@ export default function GamePage() {
             <thead>
               <tr className="text-green-600 border-b border-green-800">
                 <th className="text-left py-1">商品</th>
-                <th className="text-right">価格</th>
+                <th className="text-right">現在値</th>
+                <th className="text-right">基準値</th>
+                <th className="text-right w-12">相場</th>
                 <th className="text-right">所持</th>
-                <th className="text-right w-16">数量</th>
-                <th className="text-center w-24">操作</th>
+                <th className="text-right w-14">数量</th>
+                <th className="text-center w-20">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -126,18 +146,21 @@ export default function GamePage() {
                 const price = cityState.prices[good.id as keyof typeof cityState.prices] ?? good.basePrice
                 const owned = player.cargo[good.id as keyof typeof player.cargo] ?? 0
                 const amount = tradeAmounts[good.id] ?? 1
+                const { label, color } = priceLabel(price, good.basePrice)
                 return (
                   <tr key={good.id} className="border-b border-green-900 hover:bg-green-950">
                     <td className="py-1">{good.name}</td>
-                    <td className="text-right text-yellow-400">{price}G</td>
-                    <td className="text-right text-orange-400">{owned}</td>
+                    <td className="text-right text-yellow-400 font-bold">{price}G</td>
+                    <td className="text-right text-green-700">{good.basePrice}G</td>
+                    <td className={`text-right ${color} text-xs`}>{label}</td>
+                    <td className="text-right text-orange-400">{owned > 0 ? `${owned}` : '-'}</td>
                     <td className="text-right">
                       <input
                         type="number"
                         min={1}
                         value={amount}
                         onChange={e => setTradeAmounts(prev => ({ ...prev, [good.id]: Math.max(1, parseInt(e.target.value) || 1) }))}
-                        className="w-14 bg-black border border-green-800 text-green-300 text-right px-1 focus:outline-none"
+                        className="w-12 bg-black border border-green-800 text-green-300 text-right px-1 focus:outline-none"
                       />
                     </td>
                     <td className="text-center">
@@ -169,13 +192,18 @@ export default function GamePage() {
                   key={r.cityId}
                   onClick={() => move(r.cityId)}
                   disabled={player.ap < r.apCost}
-                  className="w-full text-left border border-green-800 p-1 hover:bg-green-950 disabled:opacity-40 text-xs"
+                  className="w-full text-left border border-green-800 p-2 hover:bg-green-950 disabled:opacity-40 text-xs"
                 >
-                  <span className={r.type === 'water' ? 'text-cyan-400' : 'text-green-400'}>
-                    {r.type === 'water' ? '⛵' : '🚶'}
-                  </span>
-                  <span className="ml-1">{r.city.name}</span>
-                  <span className="float-right text-yellow-600">AP:{r.apCost}</span>
+                  <div className="flex justify-between items-center mb-0.5">
+                    <span className="text-white">{r.city.name}</span>
+                    <span className="text-yellow-600 ml-1 shrink-0">AP:{r.apCost}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span style={{ color: r.nation.color }} className="text-xs">▮ {r.nation.name}</span>
+                    <span className={r.type === 'water' ? 'text-cyan-500' : 'text-green-600'}>
+                      {r.type === 'water' ? '⛵ 水路' : '🚶 陸路'}
+                    </span>
+                  </div>
                 </button>
               ))}
             </div>
@@ -193,7 +221,7 @@ export default function GamePage() {
                   return (
                     <div key={gid} className="flex justify-between">
                       <span>{g?.name ?? gid}</span>
-                      <span className="text-orange-400">{qty}個</span>
+                      <span className="text-orange-400">{qty}個 (重さ:{(g?.weight ?? 0) * (qty ?? 0)})</span>
                     </div>
                   )
                 })}

@@ -26,6 +26,7 @@ export async function GET(request: Request) {
     routes: city.routes.map(r => ({
       ...r,
       city: CITIES_MAP[r.cityId],
+      nation: NATIONS_MAP[CITIES_MAP[r.cityId].nationId],
     })),
   })
 }

@@ -441,7 +441,7 @@ export const CITIES_MAP = Object.fromEntries(CITIES.map(c => [c.id, c]))
 
 export const NATIONS_MAP = Object.fromEntries(NATIONS.map(n => [n.id, n]))
 
-export const AP_RESTORE_INTERVAL_MS = 10 * 60 * 1000
+export const AP_RESTORE_INTERVAL_MS = 6 * 1000
 export const MAX_AP = 20
 export const STARTING_GOLD = 1000
 export const CARGO_CAPACITY = 100
