@@ -24,11 +24,26 @@ interface GameData {
 
 function priceLabel(price: number, base: number): { label: string; color: string } {
   const ratio = price / base
-  if (ratio <= 0.7) return { label: '激安', color: 'text-cyan-400' }
-  if (ratio <= 0.9) return { label: '安い', color: 'text-green-400' }
-  if (ratio <= 1.1) return { label: '普通', color: 'text-green-700' }
-  if (ratio <= 1.3) return { label: '高め', color: 'text-yellow-500' }
-  return { label: '高騰', color: 'text-red-400' }
+  if (ratio <= 0.5)  return { label: '激安!!', color: 'text-cyan-300' }
+  if (ratio <= 0.8)  return { label: '安い',   color: 'text-green-400' }
+  if (ratio <= 1.2)  return { label: '普通',   color: 'text-green-700' }
+  if (ratio <= 1.6)  return { label: '高め',   color: 'text-yellow-500' }
+  if (ratio <= 2.5)  return { label: '高騰',   color: 'text-orange-400' }
+  return               { label: '暴騰!!',   color: 'text-red-400' }
+}
+
+function stockBar(stock: number, target = 200): string {
+  const ratio = Math.min(stock / target, 2)
+  const filled = Math.round(ratio * 5)
+  return '█'.repeat(filled) + '░'.repeat(10 - Math.min(filled, 10))
+}
+
+function prosperityLabel(p: number): { label: string; color: string } {
+  if (p >= 80) return { label: '繁栄', color: 'text-yellow-300' }
+  if (p >= 60) return { label: '安定', color: 'text-green-400' }
+  if (p >= 40) return { label: '普通', color: 'text-green-600' }
+  if (p >= 20) return { label: '停滞', color: 'text-orange-400' }
+  return               { label: '衰退', color: 'text-red-400' }
 }
 
 export default function GamePage() {
@@ -36,22 +51,26 @@ export default function GamePage() {
   const [data, setData] = useState<GameData | null>(null)
   const [message, setMessage] = useState('')
   const [tradeAmounts, setTradeAmounts] = useState<Record<string, number>>({})
-  const [apTimer, setApTimer] = useState(0)
+  const [tick, setTick] = useState(0)
 
   const load = useCallback(async () => {
     const res = await fetch('/api/city')
     if (res.status === 401) { router.push('/'); return }
-    const json = await res.json()
-    setData(json)
+    setData(await res.json())
   }, [router])
 
   useEffect(() => { load() }, [load])
 
-  // APカウントダウン表示用タイマー
+  // 毎秒カウントアップ（AP表示更新 & 定期リロード）
   useEffect(() => {
-    const id = setInterval(() => setApTimer(t => t + 1), 1000)
+    const id = setInterval(() => {
+      setTick(t => {
+        if ((t + 1) % 10 === 0) load()  // 10秒ごとに自動リロード
+        return t + 1
+      })
+    }, 1000)
     return () => clearInterval(id)
-  }, [])
+  }, [load])
 
   async function move(targetCityId: string) {
     setMessage('')
@@ -97,6 +116,8 @@ export default function GamePage() {
     ? Math.ceil((apIntervalMs - (Date.now() - player.lastApRestore) % apIntervalMs) / 1000)
     : 0
 
+  const { label: prosLabel, color: prosColor } = prosperityLabel(cityState.prosperity)
+
   return (
     <main className="min-h-screen bg-black text-green-400 font-mono text-sm p-2">
       {/* ステータスバー */}
@@ -109,14 +130,17 @@ export default function GamePage() {
             <span className="text-green-700 ml-1 text-xs">(+1まで{apNextSec}秒)</span>
           )}
         </span>
-        <span>積荷重量: <span className={cargoWeight >= player.cargoCapacity ? 'text-red-400' : 'text-orange-400'}>{cargoWeight}/{player.cargoCapacity}</span></span>
+        <span>積荷: <span className={cargoWeight >= player.cargoCapacity ? 'text-red-400' : 'text-orange-400'}>
+          {cargoWeight}/{player.cargoCapacity}
+        </span></span>
       </div>
 
       {/* 現在地 */}
-      <div className="border border-green-700 p-2 mb-2">
-        <span className="text-green-600">現在地: </span>
+      <div className="border border-green-700 p-2 mb-2 flex flex-wrap gap-3 items-center">
+        <span className="text-green-600">現在地:</span>
         <span className="text-white font-bold">{city.name}</span>
-        <span className="ml-2 text-xs" style={{ color: nation.color }}>▮ {nation.name}</span>
+        <span style={{ color: nation.color }} className="text-xs">▮ {nation.name}</span>
+        <span className="text-green-700 text-xs">繁栄度: <span className={prosColor}>{Math.round(cityState.prosperity)} ({prosLabel})</span></span>
       </div>
 
       {message && (
@@ -133,9 +157,10 @@ export default function GamePage() {
             <thead>
               <tr className="text-green-600 border-b border-green-800">
                 <th className="text-left py-1">商品</th>
-                <th className="text-right">現在値</th>
-                <th className="text-right">基準値</th>
-                <th className="text-right w-12">相場</th>
+                <th className="text-right">価格</th>
+                <th className="text-right">基準</th>
+                <th className="text-right w-14">相場</th>
+                <th className="text-left w-24 pl-2">在庫</th>
                 <th className="text-right">所持</th>
                 <th className="text-right w-14">数量</th>
                 <th className="text-center w-20">操作</th>
@@ -144,6 +169,7 @@ export default function GamePage() {
             <tbody>
               {goods.map(good => {
                 const price = cityState.prices[good.id as keyof typeof cityState.prices] ?? good.basePrice
+                const stock = cityState.stocks?.[good.id as keyof typeof cityState.stocks] ?? 0
                 const owned = player.cargo[good.id as keyof typeof player.cargo] ?? 0
                 const amount = tradeAmounts[good.id] ?? 1
                 const { label, color } = priceLabel(price, good.basePrice)
@@ -151,9 +177,12 @@ export default function GamePage() {
                   <tr key={good.id} className="border-b border-green-900 hover:bg-green-950">
                     <td className="py-1">{good.name}</td>
                     <td className="text-right text-yellow-400 font-bold">{price}G</td>
-                    <td className="text-right text-green-700">{good.basePrice}G</td>
-                    <td className={`text-right ${color} text-xs`}>{label}</td>
-                    <td className="text-right text-orange-400">{owned > 0 ? `${owned}` : '-'}</td>
+                    <td className="text-right text-green-800">{good.basePrice}G</td>
+                    <td className={`text-right ${color}`}>{label}</td>
+                    <td className="pl-2">
+                      <span className="text-green-900 text-xs font-mono">{stockBar(stock)}</span>
+                    </td>
+                    <td className="text-right text-orange-400">{owned > 0 ? owned : '-'}</td>
                     <td className="text-right">
                       <input
                         type="number"
@@ -221,7 +250,7 @@ export default function GamePage() {
                   return (
                     <div key={gid} className="flex justify-between">
                       <span>{g?.name ?? gid}</span>
-                      <span className="text-orange-400">{qty}個 (重さ:{(g?.weight ?? 0) * (qty ?? 0)})</span>
+                      <span className="text-orange-400">{qty}個 (重{(g?.weight ?? 0) * (qty ?? 0)})</span>
                     </div>
                   )
                 })}

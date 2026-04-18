@@ -1,6 +1,5 @@
 import { cookies } from 'next/headers'
-import { getPlayer, getCityState, restoreAp, savePlayer } from '@/lib/redis'
-import { kv } from '@vercel/kv'
+import { getPlayer, getCityState, restoreAp, savePlayer, updateCityStock } from '@/lib/redis'
 import { GOODS_MAP } from '@/lib/gameData'
 import type { GoodId } from '@/lib/types'
 
@@ -42,20 +41,17 @@ export async function POST(request: Request) {
 
     player.gold -= totalCost
     player.cargo[goodId] = (player.cargo[goodId] ?? 0) + amount
-
-    await kv.hincrby(`city:${player.cityId}:stock`, goodId, -amount)
+    await updateCityStock(player.cityId, goodId, -amount)
   } else {
     const owned = player.cargo[goodId] ?? 0
     if (owned < amount) {
       return Response.json({ error: 'その商品を持っていません' }, { status: 400 })
     }
 
-    const totalGain = price * amount
-    player.gold += totalGain
+    player.gold += price * amount
     player.cargo[goodId] = owned - amount
     if (player.cargo[goodId] === 0) delete player.cargo[goodId]
-
-    await kv.hincrby(`city:${player.cityId}:stock`, goodId, amount)
+    await updateCityStock(player.cityId, goodId, amount)
   }
 
   await savePlayer(player)

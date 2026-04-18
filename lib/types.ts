@@ -52,9 +52,20 @@ export interface Player {
   createdAt: number
 }
 
+export interface CityExtState {
+  cityId: string
+  nationId: string
+  population: Record<RaceId, number>
+  prosperity: number           // 1〜100
+  stocks: Partial<Record<GoodId, number>>
+  lastTick: number             // 最後にティック処理した時刻
+}
+
 export interface CityState {
   cityId: string
   prices: Partial<Record<GoodId, number>>
   population: Record<RaceId, number>
   nationId: string
+  prosperity: number
+  stocks: Partial<Record<GoodId, number>>
 }
