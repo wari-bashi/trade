@@ -1,13 +1,17 @@
 import type { GoodId, RaceId, CityExtState } from './types'
-import { CITIES_MAP, GOODS, GOODS_MAP } from './gameData'
+import { CITIES_MAP, CITIES, GOODS } from './gameData'
 
-export const TICK_INTERVAL_MS = 60 * 1000   // 1分
-export const TARGET_STOCK = 200             // 目標在庫（これを基準に価格計算）
+export const TICK_INTERVAL_MS = 60 * 1000
+export const TARGET_STOCK = 200
 export const MAX_STOCK = 800
 export const MIN_PRICE_RATIO = 0.1
 export const MAX_PRICE_RATIO = 6.0
 
-// 種族ごとの消費傾向（prosperity=50のときの1ティックあたりの消費量係数）
+// NPCフローが発生する価格差の閾値（15%以上で流れ始める）
+const FLOW_THRESHOLD = 0.15
+// 1ティックあたりの最大フロー量
+const MAX_FLOW_PER_TICK = 60
+
 const RACE_CONSUMPTION: Record<RaceId, Partial<Record<GoodId, number>>> = {
   nekomimi: { fish: 15, figure: 8, electronics: 5, mame: 3, bread: 2 },
   hato:     { mame: 20, hatoguruma: 5, ore: 3, fish: 2, weapons: 3 },
@@ -17,7 +21,6 @@ const RACE_CONSUMPTION: Record<RaceId, Partial<Record<GoodId, number>>> = {
   ojisan:   { snacks: 15, shochu: 12, golf: 5, fish: 5, rice: 4 },
 }
 
-// 都市の初期在庫を計算
 export function getInitialStocks(city: import('./types').City): Partial<Record<GoodId, number>> {
   const stocks: Partial<Record<GoodId, number>> = {}
   for (const good of GOODS) {
@@ -34,21 +37,20 @@ export function getInitialStocks(city: import('./types').City): Partial<Record<G
   return stocks
 }
 
-// 在庫から価格を計算
 export function stockToPrice(basePrice: number, stock: number): number {
   const ratio = Math.pow(TARGET_STOCK / Math.max(stock, 5), 0.55)
   const clamped = Math.max(MIN_PRICE_RATIO, Math.min(MAX_PRICE_RATIO, ratio))
   return Math.max(1, Math.round(basePrice * clamped))
 }
 
-// 1ティック分のシミュレーション
-export function simulateTick(state: CityExtState): CityExtState {
+// 1都市分の生産・消費・繁栄度更新（NPC交易は別関数）
+export function simulateCityProduction(state: CityExtState): CityExtState {
   const city = CITIES_MAP[state.cityId]
   if (!city) return state
 
   const stocks = { ...state.stocks } as Record<GoodId, number>
   const prosperity = state.prosperity
-  const prosRatio = prosperity / 50  // 50が基準
+  const prosRatio = prosperity / 50
 
   // 1. 生産
   for (const [goodId, level] of Object.entries(city.production)) {
@@ -66,20 +68,8 @@ export function simulateTick(state: CityExtState): CityExtState {
     }
   }
 
-  // 3. NPC自動交易（在庫の目標値への引力）
-  // 接続ルート数が多いほど交易が活発 → 収束が速い
-  const routeCount = city.routes.length
-  const gravityStrength = 0.06 * (routeCount / 4)
-  for (const good of GOODS) {
-    const current = stocks[good.id as GoodId] ?? 0
-    const gap = TARGET_STOCK - current
-    const correction = Math.round(gap * gravityStrength)
-    stocks[good.id as GoodId] = Math.max(0, Math.min(MAX_STOCK, current + correction))
-  }
-
-  // 4. 繁栄度の更新
+  // 3. 繁栄度の更新
   let prosperityDelta = 0
-  // 需要品の在庫不足はペナルティ
   for (const [goodId, demLevel] of Object.entries(city.demand)) {
     const stock = stocks[goodId as GoodId] ?? 0
     if (stock < 30) {
@@ -88,18 +78,15 @@ export function simulateTick(state: CityExtState): CityExtState {
       prosperityDelta += demLevel * 0.2
     }
   }
-  // 生産品の在庫過多は繁栄を少し下げる（売れ残り）
   for (const [goodId] of Object.entries(city.production)) {
     const stock = stocks[goodId as GoodId] ?? 0
     if (stock >= MAX_STOCK * 0.9) prosperityDelta -= 0.5
   }
-  // 基本繁栄度への自然回帰（都市固有の上限・下限に引き戻される）
-  const basePros = city.baseProsperity
-  prosperityDelta += (basePros - prosperity) * 0.05
+  prosperityDelta += (city.baseProsperity - prosperity) * 0.05
 
   const newProsperity = Math.max(1, Math.min(100, prosperity + prosperityDelta))
 
-  // 5. 人口・国籍の変動（10ティックに1回程度の速さで）
+  // 4. 人口・国籍の変動
   let population = { ...state.population }
   let nationId = state.nationId
   if (Math.random() < 0.1) {
@@ -117,7 +104,92 @@ export function simulateTick(state: CityExtState): CityExtState {
   }
 }
 
-// 繁栄度に応じて人口比率をゆっくり変化させる
+// 全都市間のNPCフロー計算（価格差に応じて在庫が隣へ流れる）
+export function simulateNPCFlows(
+  allStates: Record<string, CityExtState>
+): Record<string, CityExtState> {
+  // 在庫を書き換えるので shallow copy
+  const stocks: Record<string, Record<GoodId, number>> = {}
+  for (const [id, state] of Object.entries(allStates)) {
+    stocks[id] = { ...state.stocks } as Record<GoodId, number>
+  }
+
+  // 重複処理を避けるため処理済みペアを管理
+  const processed = new Set<string>()
+
+  for (const city of CITIES) {
+    const stocksA = stocks[city.id]
+    if (!stocksA) continue
+
+    for (const route of city.routes) {
+      const pairKey = [city.id, route.cityId].sort().join(':')
+      if (processed.has(pairKey)) continue
+      processed.add(pairKey)
+
+      const stocksB = stocks[route.cityId]
+      if (!stocksB) continue
+
+      // 水路は流量1.5倍、APコストが低いルートほど活発
+      const flowSpeed = (route.type === 'water' ? 1.5 : 1.0) / route.apCost
+
+      for (const good of GOODS) {
+        const qA = stocksA[good.id as GoodId] ?? 0
+        const qB = stocksB[good.id as GoodId] ?? 0
+
+        const priceA = stockToPrice(good.basePrice, qA)
+        const priceB = stockToPrice(good.basePrice, qB)
+
+        const diff = priceB - priceA
+        const threshold = priceA * FLOW_THRESHOLD
+
+        if (diff > threshold) {
+          // A→B方向に流れる
+          const flowAmount = Math.min(
+            Math.round((diff / priceA) * 20 * flowSpeed),
+            MAX_FLOW_PER_TICK,
+            qA,
+          )
+          stocksA[good.id as GoodId] = qA - flowAmount
+          stocksB[good.id as GoodId] = Math.min(MAX_STOCK, qB + flowAmount)
+        } else if (-diff > threshold) {
+          // B→A方向に流れる
+          const flowAmount = Math.min(
+            Math.round((-diff / priceB) * 20 * flowSpeed),
+            MAX_FLOW_PER_TICK,
+            qB,
+          )
+          stocksB[good.id as GoodId] = qB - flowAmount
+          stocksA[good.id as GoodId] = Math.min(MAX_STOCK, qA + flowAmount)
+        }
+      }
+    }
+  }
+
+  // 更新した在庫をstateに戻す
+  const result: Record<string, CityExtState> = {}
+  for (const [id, state] of Object.entries(allStates)) {
+    result[id] = { ...state, stocks: stocks[id] ?? state.stocks }
+  }
+  return result
+}
+
+// 全都市に対してNティック分のシミュレーション（生産+NPC交易セット）
+export function simulateAllTicks(
+  allStates: Record<string, CityExtState>,
+  ticks: number,
+): Record<string, CityExtState> {
+  let states = { ...allStates }
+  for (let i = 0; i < ticks; i++) {
+    // 各都市の生産・消費
+    for (const id of Object.keys(states)) {
+      states[id] = simulateCityProduction(states[id])
+    }
+    // NPC交易フロー
+    states = simulateNPCFlows(states)
+  }
+  return states
+}
+
 function evolvePopulation(
   population: Record<RaceId, number>,
   prosperity: number,
@@ -126,38 +198,27 @@ function evolvePopulation(
   const city = CITIES_MAP[cityId]
   const base = city.basePopulation
   const newPop = { ...population }
-
-  // 繁栄が高いと基本人口構成に近づく、低いと大きい種族がさらに増える（同族ボーナス）
   const races = Object.keys(newPop) as RaceId[]
   const dominant = races.reduce((a, b) => newPop[a] > newPop[b] ? a : b)
 
   for (const race of races) {
     const diff = base[race] - newPop[race]
-    // 繁栄が高い→基本値に戻る力が働く（移住・発展）
     const returnForce = diff * 0.02 * (prosperity / 50)
-    // 支配種族はさらに少し増える傾向
     const dominanceBonus = race === dominant ? 0.3 : -0.1
     newPop[race] = Math.max(0, newPop[race] + returnForce + dominanceBonus)
   }
 
-  // 合計を100に正規化
   const total = Object.values(newPop).reduce((s, v) => s + v, 0)
   for (const race of races) {
     newPop[race] = Math.round((newPop[race] / total) * 100)
   }
-
   return newPop
 }
 
-// 人口比率から支配国を決定（60%超で国籍変更）
 function getDominantNation(population: Record<RaceId, number>): string | null {
   const raceToNation: Record<RaceId, string> = {
-    nekomimi: 'nekomimi',
-    hato: 'hato',
-    bushi: 'satsuma',
-    yamazaki: 'yamazaki',
-    natto: 'natto',
-    ojisan: 'ojisan',
+    nekomimi: 'nekomimi', hato: 'hato', bushi: 'satsuma',
+    yamazaki: 'yamazaki', natto: 'natto', ojisan: 'ojisan',
   }
   for (const [race, ratio] of Object.entries(population)) {
     if (ratio >= 60) return raceToNation[race as RaceId]
@@ -165,13 +226,13 @@ function getDominantNation(population: Record<RaceId, number>): string | null {
   return null
 }
 
-// lazyティック処理：最後のティックから経過した分だけシミュレーション
+// 単一都市のlazyティック（生産・消費のみ、NPC交易なし）
 export function applyMissedTicks(state: CityExtState, now: number): CityExtState {
   const elapsed = now - state.lastTick
-  const ticks = Math.min(Math.floor(elapsed / TICK_INTERVAL_MS), 60) // 最大60ティック一気に処理
+  const ticks = Math.min(Math.floor(elapsed / TICK_INTERVAL_MS), 60)
   let current = state
   for (let i = 0; i < ticks; i++) {
-    current = simulateTick(current)
+    current = simulateCityProduction(current)
   }
   return current
 }

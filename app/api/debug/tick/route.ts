@@ -1,25 +1,33 @@
 import { kv } from '@vercel/kv'
 import { CITIES } from '@/lib/gameData'
-import { simulateTick } from '@/lib/simulation'
+import { simulateAllTicks } from '@/lib/simulation'
 import type { CityExtState } from '@/lib/types'
 
 export async function POST(request: Request) {
   const { times = 10 } = await request.json().catch(() => ({}))
   const n = Math.min(Math.max(1, Number(times)), 100)
 
-  const results: Record<string, { prosperity: number; nationId: string }> = {}
-
+  // 全都市の状態を一括ロード
+  const allStates: Record<string, CityExtState> = {}
   for (const city of CITIES) {
     const stored = await kv.get<CityExtState>(`cityext:${city.id}`)
-    if (!stored) continue
-
-    let state = stored
-    for (let i = 0; i < n; i++) {
-      state = simulateTick(state)
-    }
-    await kv.set(`cityext:${city.id}`, state)
-    results[city.id] = { prosperity: Math.round(state.prosperity), nationId: state.nationId }
+    if (stored) allStates[city.id] = stored
   }
 
-  return Response.json({ ticked: n, cities: results })
+  // 生産+NPC交易をNティック分まとめて実行
+  const updated = simulateAllTicks(allStates, n)
+
+  // 全都市を一括保存
+  await Promise.all(
+    Object.values(updated).map(s => kv.set(`cityext:${s.cityId}`, s))
+  )
+
+  const summary = Object.fromEntries(
+    Object.values(updated).map(s => [
+      s.cityId,
+      { prosperity: Math.round(s.prosperity), nation: s.nationId },
+    ])
+  )
+
+  return Response.json({ ticked: n, cities: summary })
 }
