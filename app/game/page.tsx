@@ -52,6 +52,8 @@ export default function GamePage() {
   const [message, setMessage] = useState('')
   const [tradeAmounts, setTradeAmounts] = useState<Record<string, number>>({})
   const [tick, setTick] = useState(0)
+  const [debugTicking, setDebugTicking] = useState(false)
+  const [debugMsg, setDebugMsg] = useState('')
 
   const load = useCallback(async () => {
     const res = await fetch('/api/city')
@@ -71,6 +73,20 @@ export default function GamePage() {
     }, 1000)
     return () => clearInterval(id)
   }, [load])
+
+  async function debugTick(times: number) {
+    setDebugTicking(true)
+    setDebugMsg('')
+    const res = await fetch('/api/debug/tick', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ times }),
+    })
+    const json = await res.json()
+    setDebugMsg(`${json.ticked}ティック完了`)
+    await load()
+    setDebugTicking(false)
+  }
 
   async function move(targetCityId: string) {
     setMessage('')
@@ -258,6 +274,22 @@ export default function GamePage() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* デバッグパネル */}
+      <div className="mt-2 border border-red-900 p-2 text-xs">
+        <span className="text-red-600 mr-3">DEBUG</span>
+        {[1, 10, 60].map(n => (
+          <button
+            key={n}
+            onClick={() => debugTick(n)}
+            disabled={debugTicking}
+            className="bg-red-950 border border-red-800 text-red-300 px-2 py-0.5 mr-1 hover:bg-red-900 disabled:opacity-40"
+          >
+            +{n}ティック
+          </button>
+        ))}
+        {debugMsg && <span className="text-red-400 ml-2">{debugMsg}</span>}
       </div>
     </main>
   )
