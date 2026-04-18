@@ -70,7 +70,7 @@ export async function getCityExtState(cityId: string): Promise<CityExtState> {
     cityId,
     nationId: city.nationId,
     population: { ...city.basePopulation },
-    prosperity: 50,
+    prosperity: city.baseProsperity,
     stocks: getInitialStocks(city),
     lastTick: Date.now(),
   }

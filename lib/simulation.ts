@@ -93,8 +93,9 @@ export function simulateTick(state: CityExtState): CityExtState {
     const stock = stocks[goodId as GoodId] ?? 0
     if (stock >= MAX_STOCK * 0.9) prosperityDelta -= 0.5
   }
-  // 基本的な安定加点
-  prosperityDelta += 0.3
+  // 基本繁栄度への自然回帰（都市固有の上限・下限に引き戻される）
+  const basePros = city.baseProsperity
+  prosperityDelta += (basePros - prosperity) * 0.05
 
   const newProsperity = Math.max(1, Math.min(100, prosperity + prosperityDelta))
 

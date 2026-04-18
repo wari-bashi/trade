@@ -27,6 +27,7 @@ export interface City {
   id: string
   name: string
   nationId: string
+  baseProsperity: number
   basePopulation: Record<RaceId, number>
   production: Partial<Record<GoodId, number>>
   demand: Partial<Record<GoodId, number>>
